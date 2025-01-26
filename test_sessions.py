@@ -20,24 +20,6 @@ PROXY_LIST = [
         'port': 5798,
         'username': 'Maomaomao77',
         'password': 'Maomaomao77'
-    },
-    {
-        'addr': "86.38.26.189",
-        'port': 6354,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "198.105.111.87",
-        'port': 6765,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "185.236.95.32",
-        'port': 5993,
-        'username': 'binghua99',
-        'password': 'binghua99'
     }
 ]
 

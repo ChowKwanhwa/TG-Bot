@@ -20,10 +20,10 @@ API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 
 # 其他配置
-TARGET_GROUP = "https://t.me/linqingfeng221"
+TARGET_GROUP = "https://t.me/hopper_global"
 TOPIC_ID = 3
-SESSIONS_DIR = "sessions"
-MESSAGES_FILE = "话术/latest_messages.csv"
+SESSIONS_DIR = "hecai"
+MESSAGES_FILE = "Hopper/Hopper_messages.csv"
 
 # 读取消息数据
 df = pd.read_csv(MESSAGES_FILE)
@@ -36,28 +36,10 @@ REACTION_EMOJIS = ['👍',  '🔥', '🎉', '🔥']
 PROXY_LIST = [
     {
         'proxy_type': 'socks5',
-        'addr': '119.42.39.170',
-        'port': 5798,
+        'addr': '45.252.58.93',
+        'port': 6722,
         'username': 'Maomaomao77',
         'password': 'Maomaomao77'
-    },
-    {
-        'addr': "86.38.26.189",
-        'port': 6354,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "198.105.111.87",
-        'port': 6765,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "185.236.95.32",
-        'port': 5993,
-        'username': 'binghua99',
-        'password': 'binghua99'
     }
 ]
 
@@ -67,6 +49,8 @@ def parse_args():
                        help='Enable topic mode for forum channels')
     parser.add_argument('--topic-id', type=int,
                        help=f'Topic ID for forum channels (default: {TOPIC_ID})')
+    parser.add_argument('--loop', action='store_true',
+                       help='Enable continuous message sending mode')
     args = parser.parse_args()
     
     # 如果启用了topic模式但没有指定topic-id，使用默认的TOPIC_ID
@@ -75,8 +59,30 @@ def parse_args():
         
     return args
 
+async def try_join_group(client, group_url):
+    """尝试加入目标群组"""
+    try:
+        channel = await client.get_entity(group_url)
+        # 检查是否已经在群组中
+        try:
+            participant = await client.get_participants(channel, limit=1)
+            print(f"账号已在目标群组中")
+            return True
+        except Exception:
+            print(f"账号未在目标群组中，正在尝试加入...")
+            try:
+                await client(JoinChannelRequest(channel))
+                print(f"成功加入目标群组")
+                return True
+            except Exception as join_error:
+                print(f"加入群组失败: {str(join_error)}")
+                return False
+    except Exception as e:
+        print(f"获取群组信息失败: {str(e)}")
+        return False
+
 async def try_connect_with_proxy(session_file, proxy_config):
-    """尝试使用特定代理连接"""
+    """尝试使用特定代理连接并确保加入目标群组"""
     session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
     client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_config)
     
@@ -88,7 +94,13 @@ async def try_connect_with_proxy(session_file, proxy_config):
             me = await client.get_me()
             print(f"[成功] 使用代理 {proxy_config['addr']} 连接成功!")
             print(f"       账号: {me.first_name} (@{me.username})")
-            return client
+            
+            # 尝试加入目标群组
+            if await try_join_group(client, TARGET_GROUP):
+                return client
+            else:
+                await client.disconnect()
+                return None
         
         await client.disconnect()
         print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: 未授权")
@@ -114,7 +126,6 @@ async def init_clients():
             client = await try_connect_with_proxy(session_file, proxy)
             if client:
                 clients.append(client)
-                await join_group(client)
                 break
         
         if not client:
@@ -122,89 +133,104 @@ async def init_clients():
     
     return clients
 
-async def join_group(client):
-    try:
-        await client(JoinChannelRequest(TARGET_GROUP))
-        print(f"成功加入 {TARGET_GROUP}")
-    except Exception as e:
-        print(f"Error joining group: {e}")
-
 async def get_recent_messages(client, limit=5, use_topic=False, topic_id=None):
     channel = await client.get_entity(TARGET_GROUP)
     messages = []
     kwargs = {}
     if use_topic:
         kwargs['reply_to'] = topic_id
+    print(f"正在获取最近 {limit} 条消息...")
     async for message in client.iter_messages(channel, limit=limit, **kwargs):
         messages.append(message)
-    return messages[::-1]  # 反转消息列表，使最早的消息在前面
+        print(f"获取到消息ID: {message.id}")
+    messages = messages[::-1]  # 反转消息列表，使最早的消息在前面
+    print(f"共获取到 {len(messages)} 条消息")
+    return messages
 
 async def process_action(client, message_data, recent_messages, use_topic, topic_id):
     try:
         channel = await client.get_entity(TARGET_GROUP)
+        me = await client.get_me()
+        username = f"@{me.username}" if me.username else me.id
         
-        # 在topic模式下添加对第五条消息的互动概率
-        if use_topic and recent_messages and len(recent_messages) >= 5:
-            random_value = random.random()
-            if random_value < 0.3:  # 30%概率回复第五条消息
-                target_message = recent_messages[4]  # 第五条消息
-                kwargs = {'reply_to': target_message.id}
-                await client.send_message(channel, message_data['message_content'], **kwargs)
-                return
-            elif random_value < 0.2:  # 20%概率对第五条消息添加表情反应
-                target_message = recent_messages[4]  # 第五条消息
-                chosen_emoji = random.choice(REACTION_EMOJIS)
-                reaction = [ReactionEmoji(emoticon=chosen_emoji)]
-                
-                await client(SendReactionRequest(
-                    peer=channel,
-                    msg_id=target_message.id,
-                    reaction=reaction
-                ))
-                me = await client.get_me()
-                username = f"@{me.username}" if me.username else me.id
-                print(f"{username} 对消息ID {target_message.id} 进行了表情({chosen_emoji})反应")
-                return
+        if not recent_messages:  # 如果没有最近消息，直接发送新消息
+            print(f"没有获取到最近消息，直接发送新消息")
+            kwargs = {'reply_to': topic_id} if use_topic else {}
+            await send_message_by_type(client, channel, message_data, kwargs)
+            return
+
+        random_value = random.random()
+        print(f"随机值: {random_value:.2f}")
         
-        # 原有的处理逻辑
-        if recent_messages and random.random() < 0.2:
-            target_message = recent_messages[-1]
-            if random.random() < 0.5:
-                emoji_reactions = ['👍', '🔥', '🎉', '💯']
-                chosen_emoji = random.choice(emoji_reactions)
-                reaction = [ReactionEmoji(emoticon=chosen_emoji)]
-                reaction_text = '点赞' if chosen_emoji == '👍' else f'表情({chosen_emoji})'
-                
-                await client(SendReactionRequest(
-                    peer=channel,
-                    msg_id=target_message.id,
-                    reaction=reaction
-                ))
-                me = await client.get_me()
-                username = f"@{me.username}" if me.username else me.id
-                print(f"{username} 对消息ID {target_message.id} 进行了{reaction_text}反应")
-            else:
+        if random_value < 0.15:  # 15% 概率发送表情反应
+            target_message = random.choice(recent_messages)
+            chosen_emoji = random.choice(REACTION_EMOJIS)
+            reaction = [ReactionEmoji(emoticon=chosen_emoji)]
+            reaction_text = '点赞' if chosen_emoji == '👍' else f'表情({chosen_emoji})'
+            
+            await client(SendReactionRequest(
+                peer=channel,
+                msg_id=target_message.id,
+                reaction=reaction
+            ))
+            print(f"{username} 对消息ID {target_message.id} 进行了{reaction_text}反应")
+            
+        elif random_value < 0.40:  # 25% 概率回复消息 (0.15 + 0.25 = 0.40)
+            target_message = random.choice(recent_messages)
+            print(f"{username} 正在回复消息ID {target_message.id}")
+            
+            try:
                 kwargs = {'reply_to': target_message.id}
-                if use_topic:
-                    kwargs['reply_to'] = topic_id
-                await client.send_message(channel, message_data['message_content'], **kwargs)
-        else:
-            kwargs = {}
-            if use_topic:
-                kwargs['reply_to'] = topic_id
+                await send_message_by_type(client, channel, message_data, kwargs)
+                print(f"回复消息成功")
+            except Exception as e:
+                print(f"回复消息失败: {str(e)}")
+                # 如果回复失败，尝试直接发送消息
+                kwargs = {'reply_to': topic_id} if use_topic else {}
+                await send_message_by_type(client, channel, message_data, kwargs)
                 
-            if message_data['message_type'] in ['video', 'photo']:
-                media_path = message_data['media_path'].replace('话术\\', '')
-                await client.send_file(channel, os.path.join("话术", media_path), **kwargs)
-            else:
-                await client.send_message(channel, message_data['message_content'], **kwargs)
+        else:  # 剩余 60% 概率直接发送消息
+            print(f"{username} 直接发送消息")
+            kwargs = {'reply_to': topic_id} if use_topic else {}
+            await send_message_by_type(client, channel, message_data, kwargs)
+                
     except Exception as e:
         print(f"Error processing action: {e}")
+
+async def send_message_by_type(client, channel, message_data, kwargs):
+    """根据消息类型发送不同类型的消息"""
+    message_type = message_data['message_type']
+    print(f"发送 {message_type} 类型的消息")
+    
+    if message_type == 'text':
+        await client.send_message(channel, message_data['message_content'], **kwargs)
+    
+    elif message_type in ['video', 'photo', 'file']:
+        # 从media_path中提取文件路径
+        media_path = message_data['media_path'].replace('media/', '')
+        full_path = os.path.join("话术", "media", media_path)
+        print(f"发送媒体文件: {full_path}")
+        await client.send_file(channel, full_path, **kwargs)
+    
+    elif message_type == 'sticker':
+        # 从message_content中提取sticker ID
+        sticker_id = message_data['message_content'].split()[1].strip('[]')
+        print(f"发送sticker: {sticker_id}")
+        # 对于sticker，我们需要先获取sticker对象
+        stickers = await client.get_messages(channel, ids=[int(sticker_id)])
+        if stickers and stickers[0].sticker:
+            await client.send_file(channel, stickers[0].sticker, **kwargs)
+        else:
+            print(f"无法获取sticker: {sticker_id}")
+    
+    else:
+        print(f"未知的消息类型: {message_type}")
 
 async def main():
     args = parse_args()
     topic_id = args.topic_id if args.topic else None
     print(f"Using topic mode: {args.topic}, topic ID: {topic_id}")
+    print(f"Loop mode: {args.loop}")
     
     # 使用新的初始化方法
     clients = await init_clients()
@@ -215,23 +241,31 @@ async def main():
     
     print(f"成功初始化 {len(clients)} 个客户端")
     
-    # 处理消息发送
-    for i in range(0, len(messages), len(clients)):
-        # 获取最近的消息
-        recent_messages = await get_recent_messages(clients[0], limit=5, 
-                                                  use_topic=args.topic, 
-                                                  topic_id=topic_id)
-        
-        batch_messages = messages[i:i + len(clients)]
-        if not batch_messages:
-            break
+    while True:  # 添加无限循环
+        # 处理消息发送
+        for i in range(0, len(messages), len(clients)):
+            # 获取最近的消息
+            recent_messages = await get_recent_messages(clients[0], limit=5, 
+                                                      use_topic=args.topic, 
+                                                      topic_id=topic_id)
             
-        available_clients = clients.copy()
-        random.shuffle(available_clients)
+            batch_messages = messages[i:i + len(clients)]
+            if not batch_messages:
+                break
+                
+            available_clients = clients.copy()
+            random.shuffle(available_clients)
+            
+            for msg, client in zip(batch_messages, available_clients):
+                await process_action(client, msg, recent_messages, args.topic, topic_id)
+                wait_time = random.uniform(5, 15)
+                print(f"等待 {wait_time:.1f} 秒后发送下一条消息...")
+                await asyncio.sleep(wait_time)
         
-        for msg, client in zip(batch_messages, available_clients):
-            await process_action(client, msg, recent_messages, args.topic, topic_id)
-            await asyncio.sleep(random.uniform(1, 2))
+        if not args.loop:  # 如果不是循环模式，跳出循环
+            break
+        print("所有消息发送完成，开始新一轮发送...")
+        await asyncio.sleep(1)  # 在重新开始前稍作暂停
     
     # 关闭所有客户端
     for client in clients:
