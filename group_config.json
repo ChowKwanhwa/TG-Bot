@@ -1,0 +1,12 @@
+[
+    {
+        "group_link": "https://t.me/SuperExOfficial_CN",
+        "topic_id": 1,
+        "session_folder": "SuperExCN",
+        "csv_file": "messages/SuperExCN/1111.csv",
+        "media_base_dir": "messages/SuperExCN",
+        "min_interval": 300,
+        "max_interval": 420,
+        "loop": true
+    }
+]

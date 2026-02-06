@@ -4,48 +4,31 @@ from telethon.sessions import StringSession
 import time
 from dotenv import load_dotenv
 import os
+import config
 
 # 加载环境变量
 load_dotenv()
 
-# Telegram API 凭证
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-
-# 代理列表
-PROXY_LIST = [
-    {
-        'addr': '31.131.167.47',
-        'port': 12324,
-        'username': '14a91e96097d5',
-        'password': 'e48a23adb8'
-    },
-]
-
-async def test_telegram_proxy(proxy):
-    """测试代理与Telegram的连接"""
+async def test_telegram_proxy(proxy_tuple):
+    """测试代理与Telegram的连接
+    proxy_tuple format: (type, ip, port, rdns, username, password)
+    """
     try:
-        # 配置代理
-        proxy_config = {
-            'proxy_type': 'socks5',
-            'addr': proxy['addr'],
-            'port': proxy['port'],
-            'username': proxy['username'],
-            'password': proxy['password'],
-            'rdns': True
-        }
+        # 提取代理信息用于显示
+        # config.PROXY_LIST 格式: ("socks5", ip, port, rdns, username, password)
+        proxy_type, addr, port, rdns, username, password = proxy_tuple
 
-        # 创建客户端
+        # 创建客户端 - Telethon 直接支持元组格式的代理配置
         client = TelegramClient(
             StringSession(),
-            API_ID,
-            API_HASH,
-            proxy=proxy_config
+            config.API_ID,
+            config.API_HASH,
+            proxy=proxy_tuple
         )
 
         # 测试连接
         start_time = time.time()
-        print(f"   正在连接到 {proxy['addr']}:{proxy['port']}...")
+        print(f"   正在连接到 {addr}:{port}...")
         await client.connect()
         
         if not await client.is_user_authorized():
@@ -63,12 +46,13 @@ async def test_telegram_proxy(proxy):
     except Exception as e:
         return False, str(e), "连接失败"
 
-async def test_proxy(proxy):
+async def test_proxy(proxy_tuple):
     """测试单个代理"""
-    print(f"\n测试代理: {proxy['addr']}:{proxy['port']}")
+    proxy_type, addr, port, rdns, username, password = proxy_tuple
+    print(f"\n测试代理: {addr}:{port}")
     
     # 测试Telegram连接
-    tg_success, tg_result, status = await test_telegram_proxy(proxy)
+    tg_success, tg_result, status = await test_telegram_proxy(proxy_tuple)
     
     if isinstance(tg_result, float):
         print(f"   ✅ 连接成功 (延迟: {tg_result:.2f}秒)")
@@ -77,7 +61,7 @@ async def test_proxy(proxy):
         print(f"   ❌ 连接失败: {tg_result}")
     
     return {
-        'proxy': f"{proxy['addr']}:{proxy['port']}",
+        'proxy': f"{addr}:{port}",
         'success': tg_success,
         'result': tg_result,
         'status': status
@@ -85,10 +69,14 @@ async def test_proxy(proxy):
 
 async def main():
     """主函数"""
-    print("开始测试代理列表...")
+    print("开始测试代理列表 (from config.py)...")
     results = []
     
-    for proxy in PROXY_LIST:
+    if not config.PROXY_LIST:
+        print("config.py 中没有配置代理")
+        return
+
+    for proxy in config.PROXY_LIST:
         result = await test_proxy(proxy)
         results.append(result)
     

@@ -1,274 +1,335 @@
-#如果是topic，使用flag --topic，并指定topic-id，如python sender.py --topic --topic-id 3
-
 import os
 import pandas as pd
 from telethon import TelegramClient
 import asyncio
 import random
-from telethon.tl.types import InputPeerChannel, ReactionEmoji
-from telethon.tl.functions.messages import GetHistoryRequest, SendReactionRequest
-import emoji
-from dotenv import load_dotenv
+from telethon.tl.types import ReactionEmoji
+from telethon.tl.functions.messages import SendReactionRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 import argparse
+import sys
+import csv
+import json
+import config
 
-# 加载.env文件
-load_dotenv()
-
-# 从环境变量获取API凭据
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-
-# 其他配置
-TARGET_GROUP = "https://t.me/GenesisProtocolOfficial"
-TOPIC_ID = 1
-SESSIONS_DIR = "genesisday2"
-MESSAGES_FILE = "MemeCoreCommunity/MemeCoreCommunity_messages.csv"
-
-# 读取消息数据
-df = pd.read_csv(MESSAGES_FILE)
-messages = df.to_dict('records')
-
-# 表情符号列表用于reactions
-REACTION_EMOJIS = ['👍',  '🔥', '🎉', '🔥']
-
-# 代理列表
-PROXY_LIST = [
-    {
-        'proxy_type': 'socks5',  # 添加代理类型
-        'addr': '31.131.167.47',
-        'port': 12324,
-        'username': '14a91e96097d5',
-        'password': 'e48a23adb8'
-    }
-]
+# Configuration Constants
+DEFAULT_MIN_INTERVAL = 5
+DEFAULT_MAX_INTERVAL = 120
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Telegram message sender')
-    parser.add_argument('--topic', action='store_true', 
-                       help='Enable topic mode for forum channels')
-    parser.add_argument('--topic-id', type=int,
-                       help=f'Topic ID for forum channels (default: {TOPIC_ID})')
-    parser.add_argument('--loop', action='store_true',
-                       help='Enable continuous message sending mode')
-    args = parser.parse_args()
-    
-    # 如果启用了topic模式但没有指定topic-id，使用默认的TOPIC_ID
-    if args.topic and args.topic_id is None:
-        args.topic_id = TOPIC_ID
-        
-    return args
+    parser.add_argument('--groups', nargs='+', help='Specify group names (keys in config) to run')
+    parser.add_argument('--loop', action='store_true', help='Enable continuous message sending mode')
+    parser.add_argument('--max-messages', type=int, help='Limit number of messages to send per group')
+    parser.add_argument('--prefer-media', action='store_true', help='Prioritize media messages')
+    return parser.parse_args()
 
-async def try_join_group(client, group_url):
-    """尝试加入目标群组"""
+def load_group_config():
+    """Load config and normalize to a dictionary keyed by Session Folder or custom ID"""
     try:
-        channel = await client.get_entity(group_url)
-        # 检查是否已经在群组中
-        try:
-            participant = await client.get_participants(channel, limit=1)
-            print(f"账号已在目标群组中")
-            return True
-        except Exception:
-            print(f"账号未在目标群组中，正在尝试加入...")
-            try:
-                await client(JoinChannelRequest(channel))
-                print(f"成功加入目标群组")
-                return True
-            except Exception as join_error:
-                print(f"加入群组失败: {str(join_error)}")
-                return False
-    except Exception as e:
-        print(f"获取群组信息失败: {str(e)}")
-        return False
-
-async def try_connect_with_proxy(session_file, proxy_config):
-    """尝试使用特定代理连接并确保加入目标群组"""
-    session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
-    client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_config)
-    
-    try:
-        print(f"正在尝试使用代理 {proxy_config['addr']}:{proxy_config['port']} 连接...")
-        await client.connect()
-        
-        if await client.is_user_authorized():
-            me = await client.get_me()
-            print(f"[成功] 使用代理 {proxy_config['addr']} 连接成功!")
-            print(f"       账号: {me.first_name} (@{me.username})")
+        with open(config.GROUP_CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
             
-            # 尝试加入目标群组
-            if await try_join_group(client, TARGET_GROUP):
-                return client
-            else:
-                await client.disconnect()
-                return None
-        
-        await client.disconnect()
-        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: 未授权")
-        return None
-        
+        # Convert list to dict if it's a list. 
+        # Dict key will be 'session_folder' for identification if not specified
+        if isinstance(data, list):
+            new_config = {}
+            for item in data:
+                # Use session_folder as key if available, else something unique
+                key = item.get('session_folder', 'default')
+                new_config[key] = item
+            return new_config
+        return data
     except Exception as e:
-        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: {str(e)}")
+        print(f"Error loading config: {e}")
+        return {}
+
+def get_message_text(message_data):
+    """Safe extraction of message text content"""
+    # Normalized search for various possible header names for 'content'
+    lower_map = {str(k).strip().lower(): v for k, v in message_data.items()}
+    for k in ('content', 'message_content', 'text', 'message'):
+        v = lower_map.get(k)
+        if v is not None and not pd.isna(v) and str(v).strip() != '':
+            return str(v)
+    return None
+
+def get_message_type(message_data):
+    """Determine message type (text, photo, video, etc.)"""
+    lower_map = {str(k).strip().lower(): v for k, v in message_data.items()}
+    for k in ('type', 'message_type', 'msg_type'):
+        v = lower_map.get(k)
+        if v is not None and not pd.isna(v) and str(v).lower() != 'nan':
+            return str(v).lower()
+    return 'text'
+
+def get_message_meta(message_data, key_name):
+    """Helper to get columns like media_file, id, etc."""
+    lower_map = {str(k).strip().lower(): v for k, v in message_data.items()}
+    return lower_map.get(str(key_name).strip().lower())
+
+def get_session_files(session_folder):
+    """Find .session files in the specified subdirectory under SESSIONS_DIR"""
+    target_dir = os.path.join(config.SESSIONS_DIR, session_folder)
+    if not os.path.isdir(target_dir):
+        print(f"Warning: Session directory {target_dir} not found.")
+        return []
+    return [os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith('.session')]
+
+async def try_connect(session_path, proxy_config):
+    """Connect to Telegram using a specific proxy"""
+    client = TelegramClient(
+        session_path,
+        config.API_ID,
+        config.API_HASH,
+        proxy=proxy_config,
+        connection_retries=None,
+        retry_delay=1
+    )
+    try:
+        # print(f"Connecting with proxy {proxy_config[1]}...") 
+        await client.connect()
+        if await client.is_user_authorized():
+            return client
+        await client.disconnect()
+        return None
+    except Exception:
         try:
             await client.disconnect()
         except:
             pass
         return None
 
-async def init_clients():
-    """初始化所有客户端，使用代理轮换机制"""
-    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
+async def init_clients_for_group(session_folder, group_link):
+    """Initialize all valid sessions for a group and ensure they have joined"""
+    session_files = get_session_files(session_folder)
     clients = []
+    
+    print(f"[{session_folder}] Found {len(session_files)} session files. Initializing...")
     
     for session_file in session_files:
         client = None
-        # 尝试所有代理
-        for proxy in PROXY_LIST:
-            client = await try_connect_with_proxy(session_file, proxy)
+        # Try proxies until one works
+        # Shuffle proxies to distribute load? Or keep order. config.PROXY_LIST is usually short.
+        # Let's just try sequentially or random. Random is better for avoiding same proxy spam if list is long.
+        proxies = list(config.PROXY_LIST)
+        random.shuffle(proxies)
+        
+        for proxy in proxies:
+            client = await try_connect(session_file, proxy)
             if client:
-                clients.append(client)
                 break
         
-        if not client:
-            print(f"警告: {session_file} 所有代理均连接失败!")
-    
+        if client:
+            # Check/Join Group
+            try:
+                entity = await client.get_entity(group_link)
+                # Just getting entity often works if already joined. 
+                # explicit Join check is expensive, maybe just try JoinChannelRequest catch error?
+                # But 'get_entity' works for public groups even if not joined.
+                # Let's try to join to be safe.
+                try:
+                    await client(JoinChannelRequest(entity))
+                except Exception as e:
+                    if "already participant" not in str(e).lower():
+                        pass # Ignore if already inside or other minor errors
+            except Exception as e:
+                print(f"[{session_folder}] Error joining group {group_link}: {e}")
+                
+            clients.append(client)
+        else:
+            print(f"[{session_folder}] Failed to connect session: {os.path.basename(session_file)}")
+
     return clients
 
-async def get_recent_messages(client, limit=5, use_topic=False, topic_id=None):
-    channel = await client.get_entity(TARGET_GROUP)
-    messages = []
-    kwargs = {}
-    if use_topic:
-        kwargs['reply_to'] = topic_id
-    print(f"正在获取最近 {limit} 条消息...")
-    async for message in client.iter_messages(channel, limit=limit, **kwargs):
-        messages.append(message)
-        print(f"获取到消息ID: {message.id}")
-    messages = messages[::-1]  # 反转消息列表，使最早的消息在前面
-    print(f"共获取到 {len(messages)} 条消息")
-    return messages
-
-async def process_action(client, message_data, recent_messages, use_topic, topic_id):
+async def send_message_safe(client, entity, message_data, reply_to=None, media_base_dir=None):
+    """Send a message (text or media) handling errors"""
+    
+    # Get user info for logging
     try:
-        channel = await client.get_entity(TARGET_GROUP)
         me = await client.get_me()
-        username = f"@{me.username}" if me.username else me.id
-        
-        if not recent_messages:  # 如果没有最近消息，直接发送新消息
-            print(f"没有获取到最近消息，直接发送新消息")
-            kwargs = {'reply_to': topic_id} if use_topic else {}
-            await send_message_by_type(client, channel, message_data, kwargs)
-            return
+        user_info = f"{me.first_name} (@{me.username} ID:{me.id})"
+    except:
+        user_info = "Unknown User"
 
-        random_value = random.random()
-        print(f"随机值: {random_value:.2f}")
+    msg_type = get_message_type(message_data)
+    kwargs = {}
+    if reply_to:
+        kwargs['reply_to'] = reply_to
         
-        if random_value < 0.15:  # 15% 概率发送表情反应
-            target_message = random.choice(recent_messages)
-            chosen_emoji = random.choice(REACTION_EMOJIS)
-            reaction = [ReactionEmoji(emoticon=chosen_emoji)]
-            reaction_text = '点赞' if chosen_emoji == '👍' else f'表情({chosen_emoji})'
-            
-            await client(SendReactionRequest(
-                peer=channel,
-                msg_id=target_message.id,
-                reaction=reaction
-            ))
-            print(f"{username} 对消息ID {target_message.id} 进行了{reaction_text}反应")
-            
-        elif random_value < 0.40:  # 25% 概率回复消息 (0.15 + 0.25 = 0.40)
-            target_message = random.choice(recent_messages)
-            print(f"{username} 正在回复消息ID {target_message.id}")
-            
-            try:
-                kwargs = {'reply_to': target_message.id}
-                await send_message_by_type(client, channel, message_data, kwargs)
-                print(f"回复消息成功")
-            except Exception as e:
-                print(f"回复消息失败: {str(e)}")
-                # 如果回复失败，尝试直接发送消息
-                kwargs = {'reply_to': topic_id} if use_topic else {}
-                await send_message_by_type(client, channel, message_data, kwargs)
+    try:
+        if msg_type == 'text':
+            text = get_message_text(message_data)
+            if text:
+                await client.send_message(entity, text, **kwargs)
+                return True
                 
-        else:  # 剩余 60% 概率直接发送消息
-            print(f"{username} 直接发送消息")
-            kwargs = {'reply_to': topic_id} if use_topic else {}
-            await send_message_by_type(client, channel, message_data, kwargs)
+        elif msg_type in ['photo', 'video', 'file']:
+            media_path_raw = get_message_meta(message_data, 'media_file')
+            text = get_message_text(message_data) # Caption
+            
+            # Fix: Handle NaN/Float from pandas
+            if pd.isna(media_path_raw):
+                media_path_raw = None
+            else:
+                media_path_raw = str(media_path_raw).strip()
+                if not media_path_raw: 
+                    media_path_raw = None
+
+            # Fallback: if media_file col is empty, try using 'content' column
+            if not media_path_raw and text and ('/' in text or '.' in text): 
+                 # Heuristic: if content looks like a path, use it.
+                 media_path_raw = text
+                 # Since we used text as the path, we shouldn't use it as caption anymore
+                 text = None
+            
+            if not media_path_raw:
+                print(f"[{user_info}] Warning: Media message missing path. Row data: {message_data}")
+                return False
+
+            # Avoid sending the path as a caption if they are identical
+            if text and media_path_raw and text.strip() == media_path_raw.strip():
+                text = None
                 
+            # Resolve Media Path
+            if os.path.isabs(media_path_raw):
+                full_path = media_path_raw
+            else:
+                clean_path = media_path_raw.lstrip('/\\')
+                potential_paths = []
+                if media_base_dir:
+                    potential_paths.append(os.path.join(media_base_dir, clean_path))
+                potential_paths.append(os.path.join(config.BASE_DIR, clean_path))
+                
+                full_path = None
+                for p in potential_paths:
+                    if os.path.exists(p):
+                        full_path = p
+                        break
+            
+            if not full_path or not os.path.exists(full_path):
+                print(f"[{user_info}] Error: Media file not found: {media_path_raw}")
+                return False
+                
+            await client.send_file(entity, full_path, caption=text, **kwargs)
+            return True
+            
     except Exception as e:
-        print(f"Error processing action: {e}")
+        print(f"[{user_info}] Send failed: {e}")
+        return False
+        
+    return False
 
-async def send_message_by_type(client, channel, message_data, kwargs):
-    """根据消息类型发送不同类型的消息"""
-    message_type = message_data['message_type']
-    print(f"发送 {message_type} 类型的消息")
+async def worker(group_key, config_item, args):
+    """Worker task for a single group configuration"""
+    group_link = config_item['group_link']
+    topic_id = config_item.get('topic_id')
+    session_folder = config_item['session_folder']
+    csv_file = config_item['csv_file']
+    media_base_dir = config_item.get('media_base_dir')
     
-    if message_type == 'text':
-        await client.send_message(channel, message_data['message_content'], **kwargs)
+    # Interval configuration
+    min_interval = config_item.get('min_interval', DEFAULT_MIN_INTERVAL)
+    max_interval = config_item.get('max_interval', DEFAULT_MAX_INTERVAL)
     
-    elif message_type in ['video', 'photo', 'file']:
-        # 从media_path中提取文件路径
-        media_path = message_data['media_path'].replace('media/', '')
-        full_path = os.path.join("MemeCoreCommunity", "media", media_path)
-        print(f"发送媒体文件: {full_path}")
-        await client.send_file(channel, full_path, **kwargs)
+    # Resolve absolute paths
+    if not os.path.isabs(csv_file):
+        csv_file = os.path.join(config.BASE_DIR, csv_file)
+    if media_base_dir and not os.path.isabs(media_base_dir):
+        # Join with BASE_DIR or CSV dir? Usually BASE_DIR relative.
+        media_base_dir = os.path.join(config.BASE_DIR, media_base_dir)
+        
+    print(f"[{group_key}] Starting worker for {group_link} (Topic: {topic_id})")
     
-    elif message_type == 'sticker':
-        # 从content中提取sticker ID
-        sticker_id = message_data['message_content'].split()[1].strip('[]')
-        print(f"发送sticker: {sticker_id}")
-        # 直接使用sticker ID发送
-        try:
-            await client.send_file(channel, sticker_id, **kwargs)
-        except Exception as e:
-            print(f"发送sticker失败: {str(e)}")
-    
-    else:
-        print(f"未知的消息类型: {message_type}")
+    # Load Messages
+    try:
+        df = pd.read_csv(csv_file)
+        messages = df.to_dict('records')
+    except Exception as e:
+        print(f"[{group_key}] Failed to load CSV {csv_file}: {e}")
+        return
+
+    # Filter messages if needed
+    if args.max_messages:
+        messages = messages[:args.max_messages]
+
+    # Initialize Clients
+    clients = await init_clients_for_group(session_folder, group_link)
+    if not clients:
+        print(f"[{group_key}] No active clients. Aborting.")
+        return
+        
+    print(f"[{group_key}] Active clients: {len(clients)}")
+
+    # Loop configuration
+    should_loop = args.loop or config_item.get('loop', False)
+
+    # Main Loop
+    while True:
+        # Round-robin messages? Or random?
+        # Requirement implies "Repeating" content usually, but logic in previous sender was sequential.
+        # Let's stick to simple sequential iteration through CSV rows.
+        
+        for i, msg_data in enumerate(messages):
+            # Select client
+            client = random.choice(clients)
+            
+            # Fetch recent to decide interaction (random reply etc) - Optional Feature from previous sender?
+            # User requirement just says "send messages". Simplification: Just send.
+            # But previous sender had complex logic (reply rate etc). Keeping it simple first unless requested.
+            # "Sender script... send messages".
+            # Let's assume direct send to topic/group.
+            
+            reply_target = topic_id # Default reply to topic ID (Thread)
+            
+            # If we want to reply to recent messages (simulating convo), we need to fetch history.
+            # Let's keep it robust: Send to Topic.
+            
+            me = await client.get_me()
+            # print(f"[{group_key}] Sending msg {i} via {me.first_name}...")
+            
+            success = await send_message_safe(client, group_link, msg_data, reply_to=reply_target, media_base_dir=media_base_dir)
+            
+            if success:
+                # Interval
+                wait = random.uniform(min_interval, max_interval)
+                print(f"[{group_key}] Sent msg {i}. Waiting {wait:.1f}s...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"[{group_key}] Failed to send msg {i}. Skipping delay.")
+                
+        if not should_loop:
+            break
+        print(f"[{group_key}] Cycle finished. Restarting...")
+        await asyncio.sleep(5)
+
+    # Cleanup
+    for c in clients:
+        await c.disconnect()
 
 async def main():
     args = parse_args()
-    topic_id = args.topic_id if args.topic else None
-    print(f"Using topic mode: {args.topic}, topic ID: {topic_id}")
-    print(f"Loop mode: {args.loop}")
+    group_config = load_group_config()
     
-    # 使用新的初始化方法
-    clients = await init_clients()
-    
-    if not clients:
-        print("错误: 没有成功连接的客户端!")
+    if not group_config:
+        print("No group config found or valid.")
         return
+
+    tasks = []
     
-    print(f"成功初始化 {len(clients)} 个客户端")
+    # keys are 'session_folder' names based on my load_group_config logic
+    target_keys = args.groups if args.groups else group_config.keys()
     
-    while True:  # 添加无限循环
-        # 处理消息发送
-        for i in range(0, len(messages), len(clients)):
-            # 获取最近的消息
-            recent_messages = await get_recent_messages(clients[0], limit=5, 
-                                                      use_topic=args.topic, 
-                                                      topic_id=topic_id)
+    for key in target_keys:
+        if key in group_config:
+            tasks.append(worker(key, group_config[key], args))
+        else:
+            print(f"Config for '{key}' not found.")
             
-            batch_messages = messages[i:i + len(clients)]
-            if not batch_messages:
-                break
-                
-            available_clients = clients.copy()
-            random.shuffle(available_clients)
-            
-            for msg, client in zip(batch_messages, available_clients):
-                await process_action(client, msg, recent_messages, args.topic, topic_id)
-                wait_time = random.uniform(5, 60)
-                print(f"等待 {wait_time:.1f} 秒后发送下一条消息...")
-                await asyncio.sleep(wait_time)
-        
-        if not args.loop:  # 如果不是循环模式，跳出循环
-            break
-        print("所有消息发送完成，开始新一轮发送...")
-        await asyncio.sleep(1)  # 在重新开始前稍作暂停
-    
-    # 关闭所有客户端
-    for client in clients:
-        await client.disconnect()
+    if tasks:
+        await asyncio.gather(*tasks)
+    else:
+        print("Nothing to run.")
 
 if __name__ == "__main__":
     asyncio.run(main())
