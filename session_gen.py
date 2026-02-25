@@ -3,6 +3,7 @@ import asyncio
 from telethon import TelegramClient, errors
 from dotenv import load_dotenv
 import sys
+import config
 
 # 加载环境变量
 load_dotenv()
@@ -12,22 +13,17 @@ API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 
 # 会话目录
-SESSIONS_DIR = "genesisday2"
+SESSIONS_DIR = "sessions/SuperExGlobal"
 
-# 代理列表
-PROXY_LIST = [
-    {
-        'addr': '31.131.167.47',
-        'port': 12324,
-        'username': '14a91e96097d5',
-        'password': 'e48a23adb8'
-    },
-]
+# 代理列表从config获取
+PROXY_LIST = config.PROXY_LIST
 
 async def try_connect_with_proxy(phone_number, proxy_config):
     """尝试使用代理连接"""
     try:
-        print(f"\n正在使用代理 {proxy_config['addr']}:{proxy_config['port']} 尝试连接...")
+        # proxy_config format in config.py is usually (type, ip, port, rdns, username, password)
+        proxy_type, addr, port, rdns, username, password = proxy_config
+        print(f"\n正在使用代理 {addr}:{port} 尝试连接...")
         
         # 创建session文件路径，保留加号
         phone = phone_number.replace(' ', '')  # 只移除空格，保留加号
@@ -39,10 +35,10 @@ async def try_connect_with_proxy(phone_number, proxy_config):
         # 创建代理配置
         proxy = {
             'proxy_type': 'socks5',
-            'addr': proxy_config['addr'],
-            'port': proxy_config['port'],
-            'username': proxy_config['username'],
-            'password': proxy_config['password'],
+            'addr': addr,
+            'port': port,
+            'username': username,
+            'password': password,
             'rdns': True
         }
         
@@ -83,7 +79,7 @@ async def try_connect_with_proxy(phone_number, proxy_config):
         return client
         
     except Exception as e:
-        print(f"[失败] 使用代理 {proxy_config['addr']} 时出错: {str(e)}")
+        print(f"[失败] 使用代理 {proxy_config[1]} 时出错: {str(e)}")
         return None
 
 async def process_phone(phone_number):
@@ -102,15 +98,9 @@ async def main():
     
     # 定义电话号码列表
     phone_numbers = [
-        '+17854171791',
-        '+17854171625',
-        '+17854171588',
-        '+17854171334',
-        '+17853239321',
-        '+17853239214',
-        '+17853068778',
-        '+17853068116',
-        '+17853022131'
+        '+5541988708619',
+        '+5541992571062',
+        '+5545998114841'
     ]
     
     # 批量处理每个电话号码

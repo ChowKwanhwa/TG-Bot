@@ -70,9 +70,9 @@ async def main():
     args = parser.parse_args()
 
     # 确定会话目录
-    target_dir = config.SESSIONS_DIR
+    target_dir = "sessions/SuperExGlobal"
     if args.folder:
-        target_dir = os.path.join(config.SESSIONS_DIR, args.folder)
+        target_dir = os.path.join(target_dir, args.folder)
 
     if not os.path.exists(target_dir):
         print(f"错误: 会话目录 {target_dir} 不存在!")
